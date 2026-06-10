@@ -1,51 +1,78 @@
-# 6. Priority Scheduler Deep-Dive
+# ⚖️ Chunk 4: Hardware Quality of Service (QoS)
 
-## Theoretical Background
+> [!NOTE]
+> **The Heart of the SmartNIC**
+> Now that we have network packets sitting inside our four Circular BRAM Queues (Chunk 3), we need to decide the order in which they leave the SmartNIC. This is the definition of **Quality of Service (QoS)**, and it is handled entirely by the **Priority Scheduler**.
 
-The scheduler is the heart of hardware QoS. It decides the order in which queued packets are sent to the network or host.
-- **Strict Priority (SP):** Always sends packets from the highest priority queue first. If Queue 0 has data, Queue 1-3 wait.
-- **Weighted Fair Queuing (WFQ):** Assigns bandwidth percentages to each queue (e.g., 50% to Q0, 20% to Q1). Prevents starvation.
+---
 
-For our 5G SmartNIC, **URLLC (Ultra-Reliable Low-Latency) traffic strictly requires SP.** If an autonomous driving packet arrives, it must jump the line immediately, even if it starves a background video download. Therefore, `priority_scheduler.v` implements Strict Priority.
+## 1. Scheduling Algorithms 🧮
 
-## RTL Architecture
+There are two dominant algorithms used in network switches to decide which queue gets to transmit next.
 
-The scheduler interacts with the Queue Manager via a custom request/response interface, then forwards the data to a standard AXI-Stream output.
+### Algorithm A: Weighted Fair Queuing (WFQ)
+In WFQ, every queue is given a "weight" or a percentage of the total bandwidth. 
+* *Example:* Video Queue gets 60%, Web Queue gets 30%, IoT Queue gets 10%.
+* **Pros:** No queue is ever completely starved. Everyone gets a turn.
+* **Cons:** Latency is unpredictable. A critical packet might have to wait for the Video queue to finish its 60% turn.
 
-### Scheduling Algorithm
+### Algorithm B: Strict Priority (SP)
+In Strict Priority, queues are strictly ranked (Queue 0 > Queue 1 > Queue 2). 
+The scheduler will **always** drain the highest priority queue completely empty before even looking at the lower queues.
+* **Pros:** Absolute minimum latency for the highest priority queue.
+* **Cons:** If Queue 0 is flooded with infinite traffic, Queue 1 and 2 will **Starve** (they will never get to send a single packet).
 
-The scheduler maintains an array of `queue_empty` flags. Every clock cycle, it scans from highest priority to lowest priority.
+> [!IMPORTANT]
+> **Why we chose Strict Priority for 5G:**
+> In 5G networks, URLLC (Ultra-Reliable Low-Latency) traffic is used for life-critical applications (e.g., remote surgery, autonomous braking). This traffic **must** experience the absolute minimum latency possible. Therefore, our `priority_scheduler.v` module uses **Strict Priority**.
+
+---
+
+## 2. The Scheduler State Machine 🚦
+
+Because reading data from our BRAM queues takes exactly 1 clock cycle, our Priority Scheduler uses a 5-State FSM to orchestrate the read process.
 
 ```mermaid
-graph TD
-    A[Check Queues] --> Q0{Is Q0 Empty?}
-    Q0 -->|No| D0[Drain Q0]
-    Q0 -->|Yes| Q1{Is Q1 Empty?}
+stateDiagram-v2
+    [*] --> SCH_IDLE
     
-    Q1 -->|No| D1[Drain Q1]
-    Q1 -->|Yes| Q2{Is Q2 Empty?}
+    SCH_IDLE --> SCH_REQUEST : Finds an empty queue
+    note left of SCH_IDLE
+      Scans Q0 -> Q1 -> Q2 -> Q3.
+      Locks onto the highest priority 
+      queue that has data!
+    end note
     
-    Q2 -->|No| D2[Drain Q2]
-    Q2 -->|Yes| Q3{Is Q3 Empty?}
+    SCH_REQUEST --> SCH_WAIT : deq_request = 1
+    note right of SCH_REQUEST
+      Tells the Queue Manager: 
+      "Give me the next packet 
+      from Queue X!"
+    end note
     
-    Q3 -->|No| D3[Drain Q3]
-    Q3 -->|Yes| IDLE[Wait for Data]
+    SCH_WAIT --> SCH_FORWARD : Wait 1 clock cycle
+    note left of SCH_WAIT
+      Wait for the BRAM 
+      to output the data.
+    end note
     
-    classDef high fill:#f99,stroke:#333
-    classDef low fill:#9cf,stroke:#333
-    class D0 high;
-    class D3 low;
+    SCH_FORWARD --> SCH_NEXT : TLAST = 1
+    SCH_FORWARD --> SCH_FORWARD : TLAST = 0
+    note right of SCH_FORWARD
+      Streams the data to the MAC.
+    end note
+    
+    SCH_NEXT --> SCH_IDLE : TREADY = 1
 ```
 
-### The 5-State FSM
+### The Starvation Solution (Tier 2 Scope)
+As mentioned above, the fatal flaw of Strict Priority is **Starvation**. 
+In Tier 2 of this project, we will fix this by integrating a **Token Bucket Rate Limiter** directly into the scheduler.
 
-Because BRAMs in the Queue Manager take 1 clock cycle to read, the scheduler uses a 5-state FSM to orchestrate the dequeue process.
+The Token Bucket will place a hard bandwidth cap (e.g., 10 Gbps) on the URLLC queue. If URLLC traffic exceeds 10 Gbps, the Token Bucket will flag it as "Out of Tokens." The Scheduler will then temporarily skip the URLLC queue and service the lower-priority queues, saving them from starvation!
 
-1. **`SCH_IDLE`:** Scans queues. If a non-empty queue is found, locks onto `active_queue` and moves to REQUEST.
-2. **`SCH_REQUEST`:** Asserts `deq_request` and sends the `active_queue` ID to the Queue Manager.
-3. **`SCH_WAIT`:** Waits 1 cycle for the BRAM data to appear on the `qm_axis` lines.
-4. **`SCH_FORWARD`:** Asserts `m_axis_tvalid`. Data flows to the output. If `TLAST` is seen, the packet is finished; move to NEXT.
-5. **`SCH_NEXT`:** Waits for the downstream module to accept the final beat (`TREADY=1`), then returns to IDLE to pick the next queue.
+---
 
-### Latency Proof
-Our `tb_priority_scheduler.v` testbench proves that this exact SP logic results in URLLC packets achieving lower end-to-end latency than Best-Effort packets, fulfilling the MVP goal.
+> [!TIP]
+> **Next Up: The RISC-V Control Plane!**
+> We have completely covered the "Fast Path" (the hardware Verilog pipeline). In **Chunk 5**, we will explore the "Slow Path" by discussing how we will embed a full CPU core inside the FPGA to control our pipeline!

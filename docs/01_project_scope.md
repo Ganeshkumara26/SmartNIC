@@ -1,74 +1,100 @@
-# 1. Project Scope & Architecture Overview
+# 📡 Chunk 1: SmartNIC Foundations & The OpenNIC Shell
 
-## The Evolution of the SmartNIC
-Traditional Network Interface Cards (NICs) simply pass Ethernet frames between the wire and the host CPU memory. In modern 5G networks and hyper-scale datacenters, the sheer volume of packets (millions per second) overwhelms the host CPU if it has to classify, route, or drop every packet in software.
-
-A **SmartNIC** offloads this packet processing into dedicated hardware (an FPGA or ASIC). By doing so, the SmartNIC handles the "Fast Path" (routine data movement) at line-rate, freeing the CPU to focus entirely on application logic.
-
-## 5G Network Slicing & Quality of Service (QoS)
-5G introduces the concept of **Network Slicing**—creating isolated virtual networks over the same physical infrastructure. Two major 5G slices are:
-1. **URLLC (Ultra-Reliable Low-Latency Communication):** Used for autonomous driving and remote surgery. Packets must experience absolutely minimal queuing delay.
-2. **eMBB (Enhanced Mobile Broadband):** Used for 4K video streaming. Requires high bandwidth but can tolerate higher latency.
-
-The goal of this SmartNIC is to implement **hardware-accelerated QoS**. When a mix of URLLC and eMBB packets arrive simultaneously, the SmartNIC must identify them in hardware and guarantee that the URLLC packets bypass the eMBB queue, proving a measurable latency reduction.
+> [!NOTE]
+> **Welcome to the Fast Path!** This guide is written for beginners and researchers alike. It explains exactly *why* we are building this hardware, the concepts of 5G Network Slicing, and how our custom Verilog logic integrates into the massive open-source ecosystem known as OpenNIC.
 
 ---
 
-## High-Level Architecture
+## 1. The Problem: CPUs are Too Slow for 5G 🐢
 
-The SmartNIC is logically split into two domains: the **Fast Path (Datapath)** and the **Slow Path (Control Plane)**.
+In traditional datacenter networking, a standard Network Interface Card (NIC) is quite "dumb." It receives electrical pulses from the fiber optic cable, turns them into an Ethernet frame, and immediately dumps that frame into the host server's CPU memory.
+
+The CPU then has to run software (like Linux) to figure out:
+* *"Is this an IP packet?"*
+* *"What port is this going to?"*
+* *"Should I drop this packet or prioritize it?"*
+
+### The 100 Gbps Wall
+At 100 Gigabits per second (100 Gbps), a server receives roughly **150 million packets every single second**. If the CPU has to inspect every single one of those packets in software, the server will spend 100% of its processing power just moving network traffic, leaving no power left to actually run your applications!
+
+> [!TIP]
+> **The Solution: SmartNICs** 🧠
+> A SmartNIC takes that heavy packet processing workload *off* the CPU and puts it directly into dedicated hardware on the network card itself (typically an FPGA or ASIC). This is called **Hardware Offloading**.
+
+---
+
+## 2. The 5G QoS Challenge: URLLC vs. eMBB 🚦
+
+5G networks are designed to support radically different types of devices on the exact same physical cell tower. To do this, 5G uses **Network Slicing**—cutting the network into isolated virtual lanes.
+
+Our SmartNIC deals with two major slices:
+
+| Network Slice | Stand for... | Traffic Profile | Examples |
+| :--- | :--- | :--- | :--- |
+| **URLLC** | Ultra-Reliable Low-Latency Communication | Very small packets, strictly requires near-zero latency. | 🚗 Autonomous Driving <br> 🩺 Remote Robotic Surgery |
+| **eMBB** | Enhanced Mobile Broadband | Massive packets, high bandwidth, but can tolerate some latency. | 📺 4K Netflix Streaming <br> 🎮 Game Downloads |
+
+### The "Traffic Jam" Problem
+If an autonomous car sends a brake signal (URLLC), but it gets stuck in the SmartNIC's queue behind a gigabyte of Netflix video data (eMBB), the car crashes. 
+
+> [!IMPORTANT]
+> **The MVP Goal of this Project:**
+> We must build a hardware datapath that can identify URLLC packets in real-time, instantly pull them out of the traffic jam, and send them first. This is called **Hardware Quality of Service (QoS)**.
+
+---
+
+## 3. How We Build It: The OpenNIC Shell 🐚
+
+Building a 100 Gbps NIC from scratch is nearly impossible for a single researcher. You would have to write hundreds of thousands of lines of code just to talk to the PCIe bus or the physical Ethernet transceivers.
+
+Instead, we use **OpenNIC**, an open-source FPGA shell developed by AMD/Xilinx.
 
 ```mermaid
 graph TD
-    subgraph Host [Host Server (PCIe)]
-        A[Network Stack]
-        B[Application Software]
-        A <--> B
+    subgraph Host Server
+        PCI[PCIe Gen4x8 Bus]
     end
 
-    subgraph FPGA [FPGA SmartNIC]
-        subgraph Datapath [Hardware Datapath / Fast Path]
-            P[Packet Parser] --> C[Flow Classifier]
-            C --> Q[Queue Manager]
-            Q --> S[Priority Scheduler]
+    subgraph AMD Alveo FPGA
+        subgraph The OpenNIC Shell
+            CMAC[100G Ethernet Subsystem]
+            QDMA[PCIe DMA Engine]
+            
+            subgraph "Our Territory (The User Role Box)"
+                UR[Custom SmartNIC Datapath]
+            end
+            
+            CMAC <-->|AXI-Stream| UR
+            UR <-->|AXI-Stream| QDMA
         end
-
-        subgraph Control [RISC-V Control Plane / Slow Path]
-            R[RocketChip Core]
-            FW[C Firmware]
-            R --> FW
-        end
-        
-        Control -.->|AXI-Lite| Datapath
-        Host <-->|QDMA PCIe| Q
     end
 
-    subgraph Network [Physical Network]
-        MAC[100G Ethernet MAC]
+    subgraph The Internet
+        FIBER[Fiber Optic Cable]
     end
 
-    MAC --> P
-    S --> MAC
+    FIBER <--> CMAC
+    QDMA <--> PCI
+
+    classDef shell fill:#eef,stroke:#333,stroke-width:2px;
+    classDef custom fill:#ff9,stroke:#333,stroke-width:4px;
     
-    classDef hardware fill:#f9f,stroke:#333,stroke-width:2px;
-    classDef software fill:#bbf,stroke:#333,stroke-width:2px;
-    class P,C,Q,S hardware;
-    class R,FW,A,B software;
+    class CMAC,QDMA shell;
+    class UR custom;
 ```
 
-### The 3-Tier Development Roadmap
+### The "User Role" Box
+OpenNIC handles all the messy, difficult hardware interfaces (PCIe and Ethernet) and provides us with a single, blank box in the middle of the FPGA called the **User Role**. 
 
-1. **Tier 1: Simulation-First MVP (Current Status)**
-   - Pure Verilog RTL implementation of the datapath (Parser → Classifier → Queue → Scheduler).
-   - Validation via Python packet generation and Icarus Verilog testbenches.
-   - Proof that Strict Priority scheduling reduces URLLC latency.
+All we have to do is write the Verilog logic for our SmartNIC QoS pipeline, place it inside that yellow box, and OpenNIC guarantees it will run at 100 Gbps!
 
-2. **Tier 2: Control Plane & Advanced QoS**
-   - Integration of a RISC-V soft-core (e.g., RocketChip) running C firmware.
-   - Adding a Token Bucket rate limiter to prevent the URLLC queue from starving the Best-Effort queue.
-   - Dynamic updating of classifier rules via AXI4-Lite.
+### The AXI-Stream Handshake
+To move data at 100 Gbps, OpenNIC requires us to use a massive **512-bit wide data bus** running at a 250 MHz clock speed.
+* `100 Gbps / 250 MHz = 400 bits/cycle`
+* Therefore, a 512-bit bus guarantees we never drop a packet!
 
-3. **Tier 3: OpenNIC Physical Deployment**
-   - Porting the design into the "User Role" partition of the AMD OpenNIC shell.
-   - Deploying onto an AMD Alveo U200/U250 FPGA.
-   - 100 Gbps line-rate validation.
+---
+
+> [!NOTE]  
+> **Coming Up in Chunk 2:**
+> Now that we know *why* we are building this and *where* it lives, Chunk 2 will dive deep into the very first module of our pipeline: **The Packet Parser**. We will learn how to slice 64 bytes of raw binary data in a single clock cycle!
