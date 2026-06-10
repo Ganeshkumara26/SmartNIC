@@ -96,6 +96,7 @@ switch ($Target) {
         Run-Sim -Name "Priority Scheduler" `
             -Sources @(
                 "$RTL_DIR\queue\queue_manager.v",
+                "$RTL_DIR\scheduler\token_bucket.v",
                 "$RTL_DIR\scheduler\priority_scheduler.v",
                 "$TB_DIR\scheduler\tb_priority_scheduler.v"
             ) `

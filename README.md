@@ -20,6 +20,10 @@ Please read the chapters in the following order to trace the life of a 5G packet
   * Teaches 5G QoS Multi-Tenant queuing, the catastrophic effects of Head-of-Line blocking, and BRAM partitioning strategies.
 * **[Chapter 6: The Hardware QoS Egress](docs/Chapter_6_priority_scheduler.md)**
   * Teaches Strict Priority QoS algorithms, the Starvation problem, and nested combinatorial unrolling.
+* **[Chapter 7: Defeating Starvation](docs/Chapter_7_token_bucket.md)**
+  * Teaches the Token Bucket algorithm (CIR/CBS), hardware rate limiting, and mathematical network shaping.
+* **[Chapter 8: The Software Control Plane](docs/Chapter_8_axilite_csr.md)**
+  * Teaches Memory-Mapped I/O (MMIO), AXI4-Lite slave state machines, and the hardware/software boundary commit trigger architecture.
 
 ## 🛠️ Simulating the Hardware
 

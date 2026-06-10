@@ -73,6 +73,11 @@ module priority_scheduler (
     input  wire [`QUEUE_ID_WIDTH-1:0]       cfg_queue_id,
     input  wire [1:0]                       cfg_priority,    // 0=highest, 3=lowest
     input  wire                             cfg_queue_enable,
+    
+    // Token Bucket Configuration
+    input  wire [31:0]                      cfg_tb_rate,
+    input  wire [31:0]                      cfg_tb_burst,
+    input  wire                             cfg_tb_enable,
 
     // ── Statistics Output (for testbench analysis) ────────────────────
     output reg  [31:0]                      stat_total_packets,
@@ -84,6 +89,11 @@ module priority_scheduler (
     //------------------------------------------------------------------------
     reg [1:0] queue_priority [`NUM_QUEUES-1:0];  // Priority per queue
     reg       queue_enable   [`NUM_QUEUES-1:0];  // Enable per queue
+    
+    // Token Bucket Configuration Registers
+    reg [31:0] queue_tb_rate   [`NUM_QUEUES-1:0];
+    reg [31:0] queue_tb_burst  [`NUM_QUEUES-1:0];
+    reg        queue_tb_enable [`NUM_QUEUES-1:0];
 
     integer k;
     always @(posedge clk) begin
@@ -91,12 +101,41 @@ module priority_scheduler (
             for (k = 0; k < `NUM_QUEUES; k = k + 1) begin
                 queue_priority[k] <= k[1:0];  // Default: queue N → priority N
                 queue_enable[k]   <= 1'b1;    // All enabled by default
+                queue_tb_rate[k]  <= 32'd0;
+                queue_tb_burst[k] <= 32'd0;
+                queue_tb_enable[k]<= 1'b0;    // Disabled by default (unlimited)
             end
         end else if (cfg_wr_en) begin
-            queue_priority[cfg_queue_id] <= cfg_priority;
-            queue_enable[cfg_queue_id]   <= cfg_queue_enable;
+            queue_priority[cfg_queue_id]  <= cfg_priority;
+            queue_enable[cfg_queue_id]    <= cfg_queue_enable;
+            queue_tb_rate[cfg_queue_id]   <= cfg_tb_rate;
+            queue_tb_burst[cfg_queue_id]  <= cfg_tb_burst;
+            queue_tb_enable[cfg_queue_id] <= cfg_tb_enable;
         end
     end
+
+    //------------------------------------------------------------------------
+    // Token Bucket Instantiations
+    //------------------------------------------------------------------------
+    wire [`NUM_QUEUES-1:0] tb_has_tokens;
+    wire [`NUM_QUEUES-1:0] tb_consume;
+    
+    genvar g;
+    generate
+        for (g = 0; g < `NUM_QUEUES; g = g + 1) begin : gen_tb
+            token_bucket #(
+                .REFRESH_PERIOD (100)
+            ) u_tb (
+                .clk         (clk),
+                .rst_n       (rst_n),
+                .cfg_rate    (queue_tb_rate[g]),
+                .cfg_burst   (queue_tb_burst[g]),
+                .cfg_enable  (queue_tb_enable[g]),
+                .has_tokens  (tb_has_tokens[g]),
+                .consume     (tb_consume[g])
+            );
+        end
+    endgenerate
 
     //------------------------------------------------------------------------
     // Priority Selection Logic
@@ -124,7 +163,8 @@ module priority_scheduler (
                     if (!any_queue_ready &&
                         queue_enable[q] &&
                         (queue_priority[q] == p[1:0]) &&
-                        !queue_empty[q]) begin
+                        !queue_empty[q] &&
+                        tb_has_tokens[q]) begin
                         selected_queue = q[`QUEUE_ID_WIDTH-1:0];
                         any_queue_ready = 1'b1;
                     end
@@ -149,6 +189,10 @@ module priority_scheduler (
 
     // Accept data from queue manager when we're in FORWARD state and can output
     assign qm_axis_tready = (sch_state == SCH_FORWARD) && (m_axis_tready || !m_axis_tvalid);
+
+    // Consume 1 token from the active queue when a beat is successfully transmitted
+    assign tb_consume = (sch_state == SCH_FORWARD && qm_axis_tvalid && qm_axis_tready) ? 
+                        (1 << active_queue) : {`NUM_QUEUES{1'b0}};
 
     always @(posedge clk) begin
         if (!rst_n) begin
