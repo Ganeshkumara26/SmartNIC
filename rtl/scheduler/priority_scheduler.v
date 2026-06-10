@@ -81,8 +81,17 @@ module priority_scheduler (
 
     // ── Statistics Output (for testbench analysis) ────────────────────
     output reg  [31:0]                      stat_total_packets,
-    output reg  [31:0]                      stat_queue_packets [0:`NUM_QUEUES-1]
+    output wire [(`NUM_QUEUES*32)-1:0]      stat_queue_packets
 );
+
+    reg [31:0] internal_stat_queue_packets [0:`NUM_QUEUES-1];
+    
+    genvar g_stat;
+    generate
+        for (g_stat = 0; g_stat < `NUM_QUEUES; g_stat = g_stat + 1) begin : gen_stat_assign
+            assign stat_queue_packets[(g_stat*32)+31 : g_stat*32] = internal_stat_queue_packets[g_stat];
+        end
+    endgenerate
 
     //------------------------------------------------------------------------
     // Priority Configuration Registers
@@ -98,12 +107,14 @@ module priority_scheduler (
     integer k;
     always @(posedge clk) begin
         if (!rst_n) begin
+            stat_total_packets <= 32'd0;
             for (k = 0; k < `NUM_QUEUES; k = k + 1) begin
-                queue_priority[k] <= k[1:0];  // Default: queue N → priority N
-                queue_enable[k]   <= 1'b1;    // All enabled by default
+                queue_priority[k] <= k[1:0]; 
+                queue_enable[k]   <= 1'b1; 
                 queue_tb_rate[k]  <= 32'd0;
                 queue_tb_burst[k] <= 32'd0;
-                queue_tb_enable[k]<= 1'b0;    // Disabled by default (unlimited)
+                queue_tb_enable[k]<= 1'b0;
+                internal_stat_queue_packets[k] <= 32'd0;
             end
         end else if (cfg_wr_en) begin
             queue_priority[cfg_queue_id]  <= cfg_priority;
@@ -140,13 +151,6 @@ module priority_scheduler (
     //------------------------------------------------------------------------
     // Priority Selection Logic
     //------------------------------------------------------------------------
-    // Find the highest-priority (lowest number) non-empty, enabled queue.
-    //
-    // LEARNING NOTE: This is a priority encoder with indirection through
-    // the priority mapping table. We scan from priority 0 to 3, and for
-    // each priority level, check if any enabled queue at that priority
-    // has data.
-
     reg [`QUEUE_ID_WIDTH-1:0]   selected_queue;
     reg                         any_queue_ready;
 
@@ -155,10 +159,8 @@ module priority_scheduler (
         selected_queue = {`QUEUE_ID_WIDTH{1'b0}};
         any_queue_ready = 1'b0;
 
-        // Scan from highest priority (0) to lowest (NUM_PRIORITIES-1)
-        for (p = 0; p < `NUM_PRIORITIES; p = p + 1) begin
+        for (p = 0; p < 4; p = p + 1) begin
             if (!any_queue_ready) begin
-                // Check all queues at this priority level
                 for (q = 0; q < `NUM_QUEUES; q = q + 1) begin
                     if (!any_queue_ready &&
                         queue_enable[q] &&
@@ -176,21 +178,18 @@ module priority_scheduler (
     //------------------------------------------------------------------------
     // Scheduler State Machine
     //------------------------------------------------------------------------
-    localparam [2:0] SCH_IDLE     = 3'd0,  // Look for a non-empty queue
-                     SCH_REQUEST  = 3'd1,  // Issue dequeue request
-                     SCH_WAIT     = 3'd2,  // Wait for queue manager response
-                     SCH_FORWARD  = 3'd3,  // Forward packet beat to output
-                     SCH_NEXT     = 3'd4;  // Check for more beats / next packet
+    localparam [2:0] SCH_IDLE     = 3'd0,
+                     SCH_REQUEST  = 3'd1,
+                     SCH_WAIT     = 3'd2,
+                     SCH_FORWARD  = 3'd3,
+                     SCH_NEXT     = 3'd4;
 
     reg [2:0] sch_state;
-    reg [`QUEUE_ID_WIDTH-1:0] active_queue;  // Currently draining queue
+    reg [`QUEUE_ID_WIDTH-1:0] active_queue;
 
     wire output_handshake = m_axis_tvalid && m_axis_tready;
 
-    // Accept data from queue manager when we're in FORWARD state and can output
     assign qm_axis_tready = (sch_state == SCH_FORWARD) && (m_axis_tready || !m_axis_tvalid);
-
-    // Consume 1 token from the active queue when a beat is successfully transmitted
     assign tb_consume = (sch_state == SCH_FORWARD && qm_axis_tvalid && qm_axis_tready) ? 
                         (1 << active_queue) : {`NUM_QUEUES{1'b0}};
 
@@ -205,16 +204,10 @@ module priority_scheduler (
             m_axis_tkeep    <= {`AXIS_KEEP_WIDTH{1'b0}};
             m_axis_tuser    <= {`AXIS_USER_WIDTH{1'b0}};
             m_axis_tlast    <= 1'b0;
-            stat_total_packets <= 32'd0;
-            for (k = 0; k < `NUM_QUEUES; k = k + 1) begin
-                stat_queue_packets[k] <= 32'd0;
-            end
         end else begin
-            // Default: deassert dequeue request after one cycle
             deq_request <= 1'b0;
 
             case (sch_state)
-                // ── IDLE: Find the best queue to service ──────────────
                 SCH_IDLE: begin
                     m_axis_tvalid <= 1'b0;
                     if (any_queue_ready) begin
@@ -223,21 +216,18 @@ module priority_scheduler (
                     end
                 end
 
-                // ── REQUEST: Issue dequeue command ────────────────────
                 SCH_REQUEST: begin
                     deq_request  <= 1'b1;
                     deq_queue_id <= active_queue;
                     sch_state    <= SCH_WAIT;
                 end
 
-                // ── WAIT: Wait for queue manager to present data ──────
                 SCH_WAIT: begin
                     if (qm_axis_tvalid) begin
                         sch_state <= SCH_FORWARD;
                     end
                 end
 
-                // ── FORWARD: Pass data to output ──────────────────────
                 SCH_FORWARD: begin
                     if (qm_axis_tvalid && qm_axis_tready) begin
                         m_axis_tdata  <= qm_axis_tdata;
@@ -247,16 +237,13 @@ module priority_scheduler (
                         m_axis_tvalid <= 1'b1;
 
                         if (qm_axis_tlast) begin
-                            // End of packet — update stats
-                            stat_total_packets <= stat_total_packets + 1'b1;
-                            stat_queue_packets[active_queue] <=
-                                stat_queue_packets[active_queue] + 1'b1;
+                            stat_total_packets <= stat_total_packets + 1;
+                            internal_stat_queue_packets[active_queue] <= internal_stat_queue_packets[active_queue] + 1;
                             sch_state <= SCH_NEXT;
                         end
                     end
                 end
 
-                // ── NEXT: Wait for output to be consumed, then loop ───
                 SCH_NEXT: begin
                     if (output_handshake || !m_axis_tvalid) begin
                         m_axis_tvalid <= 1'b0;
