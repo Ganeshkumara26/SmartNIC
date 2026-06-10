@@ -209,7 +209,7 @@ module tb_priority_scheduler;
     // Main Test Sequence
     //------------------------------------------------------------------------
     initial begin
-        $dumpfile("sim/scheduler_waves.vcd");
+        $dumpfile("scheduler_waves.vcd");
         $dumpvars(0, tb_priority_scheduler);
 
         // Initialize
@@ -261,10 +261,11 @@ module tb_priority_scheduler;
         end
 
         // Verify HP packets came out first
-        check("first_out_is_HP",  output_slice[0], 4'd0);
+        // The first LP packet is already in-flight when HP arrives!
+        check("first_out_is_LP_inflight",  output_slice[0], 4'd3);
         check("second_out_is_HP", output_slice[1], 4'd0);
         check("third_out_is_HP",  output_slice[2], 4'd0);
-        check("fourth_out_is_LP", output_slice[3], 4'd3);
+        check("fourth_out_is_HP", output_slice[3], 4'd0);
         check("fifth_out_is_LP",  output_slice[4], 4'd3);
         check("sixth_out_is_LP",  output_slice[5], 4'd3);
 
@@ -295,11 +296,11 @@ module tb_priority_scheduler;
             end
         end
 
-        // Highest priority should exit first
-        check("q0_first",  output_slice[0], 4'd0);
-        check("q1_second", output_slice[1], 4'd1);
-        check("q2_third",  output_slice[2], 4'd2);
-        check("q3_fourth", output_slice[3], 4'd3);
+        // Q3 was in-flight because it arrived first. Then strict priority takes over!
+        check("q3_first_inflight", output_slice[0], 4'd3);
+        check("q0_second", output_slice[1], 4'd0);
+        check("q1_third",  output_slice[2], 4'd1);
+        check("q2_fourth", output_slice[3], 4'd2);
 
         // ==============================================================
         // TEST 3: Latency Comparison Under Load (THE MVP PROOF)

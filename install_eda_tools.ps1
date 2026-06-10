@@ -23,7 +23,7 @@
 # ============================================================================
 
 $ErrorActionPreference = "Stop"
-$ProgressPreference = 'SilentlyContinue' # Speeds up Invoke-WebRequest significantly
+$ProgressPreference = 'Continue' # Show progress bar
 
 $InstallDir = "D:\softwares"
 if (!(Test-Path $InstallDir)) {
@@ -51,17 +51,15 @@ try {
         $ossFile = Join-Path $InstallDir $ossAsset.name
         
         Write-Host "  -> Downloading $($ossAsset.name) ($([math]::Round($ossAsset.size / 1MB, 2)) MB)..."
-        Invoke-WebRequest -Uri $ossUrl -OutFile $ossFile
+        curl.exe -L -o $ossFile $ossUrl
         
         Write-Host "  -> Extracting OSS CAD Suite (running self-extractor)..."
         Push-Location $InstallDir
-        # The .exe is a 7zip self-extractor. -y accepts all prompts.
         $process = Start-Process -FilePath $ossFile -ArgumentList "-y" -Wait -NoNewWindow -PassThru
         Pop-Location
         
         if ($process.ExitCode -eq 0) {
             Write-Host "  -> OSS CAD Suite installed successfully." -ForegroundColor Green
-            # Clean up installer
             Remove-Item $ossFile -Force
         } else {
             Write-Host "  -> Warning: Extractor exited with code $($process.ExitCode)" -ForegroundColor Red
@@ -84,7 +82,7 @@ try {
         $rvFile = Join-Path $InstallDir $rvAsset.name
         
         Write-Host "  -> Downloading $($rvAsset.name) ($([math]::Round($rvAsset.size / 1MB, 2)) MB)..."
-        Invoke-WebRequest -Uri $rvUrl -OutFile $rvFile
+        curl.exe -L -o $rvFile $rvUrl
         
         Write-Host "  -> Extracting RISC-V Toolchain..."
         Expand-Archive -Path $rvFile -DestinationPath $InstallDir -Force
@@ -101,14 +99,13 @@ try {
 # --- 3. KLayout ---
 Write-Host "`n[3/3] Fetching KLayout (GDSII Viewer/Editor)..." -ForegroundColor Yellow
 try {
-    # We will use the latest stable version 0.30.9
     $klVersion = "0.30.9"
     $klUrl = "https://www.klayout.org/downloads/Windows/klayout-$klVersion-win64.zip"
     $klFile = Join-Path $InstallDir "klayout-$klVersion-win64.zip"
     $klDest = Join-Path $InstallDir "klayout"
     
     Write-Host "  -> Downloading KLayout v$klVersion..."
-    Invoke-WebRequest -Uri $klUrl -OutFile $klFile
+    curl.exe -L -o $klFile $klUrl
     
     Write-Host "  -> Extracting KLayout..."
     if (Test-Path $klDest) { Remove-Item -Recurse -Force $klDest }

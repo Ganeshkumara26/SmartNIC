@@ -188,7 +188,7 @@ module tb_flow_classifier;
     // Main Test Sequence
     //------------------------------------------------------------------------
     initial begin
-        $dumpfile("sim/classifier_waves.vcd");
+        $dumpfile("classifier_waves.vcd");
         $dumpvars(0, tb_flow_classifier);
 
         // Initialize

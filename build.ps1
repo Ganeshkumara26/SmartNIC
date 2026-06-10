@@ -47,7 +47,7 @@ function Run-Sim {
     Write-Host "══════════════════════════════════════════" -ForegroundColor Cyan
 
     $allSources = $Sources -join " "
-    $compileCmd = "iverilog -o $OutputVvp $INC_FLAGS $allSources"
+    $compileCmd = "iverilog -g2012 -o $OutputVvp $INC_FLAGS $allSources"
     Write-Host "  Compile: $compileCmd" -ForegroundColor DarkGray
 
     try {

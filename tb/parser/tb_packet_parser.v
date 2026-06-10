@@ -210,7 +210,7 @@ module tb_packet_parser;
 
     initial begin
         // ── VCD Dump for GTKWave ──────────────────────────────────────
-        $dumpfile("sim/parser_waves.vcd");
+        $dumpfile("parser_waves.vcd");
         $dumpvars(0, tb_packet_parser);
 
         // ── Initialize ────────────────────────────────────────────────

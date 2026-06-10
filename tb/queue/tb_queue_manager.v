@@ -156,7 +156,7 @@ module tb_queue_manager;
     reg deq_last;
 
     initial begin
-        $dumpfile("sim/queue_waves.vcd");
+        $dumpfile("queue_waves.vcd");
         $dumpvars(0, tb_queue_manager);
 
         // Initialize
@@ -253,7 +253,7 @@ module tb_queue_manager;
         $display("\n── TEST %0d: Queue Isolation ──", test_num);
 
         // Put data only in queue 2
-        enqueue_packet(4'd2, {480'd0, 32'hISOLATED});
+        enqueue_packet(4'd2, {480'd0, 32'h1501A7ED});
 
         check("q0_empty", queue_empty[0], 1'b1);
         check("q1_empty", queue_empty[1], 1'b1);

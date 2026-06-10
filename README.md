@@ -1,58 +1,44 @@
-# 5G SmartNIC with Hardware QoS
+# SmartNIC 5G Hardware Datapath
 
-A simulation-first FPGA SmartNIC packet processing accelerator for 5G network slicing, featuring hardware-accelerated Quality of Service (QoS) and designed for future integration with the OpenNIC shell and a RISC-V control plane.
+Welcome to the **SmartNIC 5G Hardware Datapath** repository. 
 
-## Documentation Reference Guide
-This repository contains a comprehensive academic-grade documentation suite. If you are learning about SmartNIC architecture, start here:
+Unlike traditional open-source projects, the documentation in this repository is designed to act as a **university-grade textbook**. It does not merely summarize the code; it teaches the underlying theoretical networking concepts, FPGA architectures, and AXI-Stream physics necessary to understand *why* the hardware was designed this way from first principles.
 
-1. **[Project Scope & Architecture](docs/01_project_scope.md)** - 5G slicing, Fast Path vs. Slow Path.
-2. **[Datapath Interfaces](docs/02_datapath_interfaces.md)** - 512-bit AXI-Stream and `TUSER` metadata.
-3. **[Packet Parser](docs/03_packet_parser.md)** - Line-rate header extraction state machine.
-4. **[Flow Classifier](docs/04_flow_classifier.md)** - TCAM rule matching and Network Slice assignment.
-5. **[Queue Manager](docs/05_queue_manager.md)** - Circular buffer BRAM mechanics.
-6. **[Priority Scheduler](docs/06_priority_scheduler.md)** - Strict priority QoS and latency reduction.
-7. **[Rate Limiting (Future)](docs/07_rate_limiting.md)** - Token Bucket traffic shaping theory.
-8. **[RISC-V Control Plane (Future)](docs/08_riscv_control_plane.md)** - AXI-Lite memory mapping the Fast Path.
-9. **[Verification Framework](docs/09_verification_framework.md)** - Python packet generation and Verilog testing.
+## 📚 The Curriculum
 
-## Prerequisites
+Please read the chapters in the following order to trace the life of a 5G packet as it travels through the silicon:
 
-To run the simulations, you need the **OSS CAD Suite** (Icarus Verilog, GTKWave, Yosys).
-We have provided an automated installer for Windows:
+* **[Chapter 1: Foundational Definitions](docs/Chapter_1_smartnic_pkg.md)**
+  * Teaches AXI-Stream bus widths, Ethernet/IPv4 offset math, and how Verilog preprocessors map global parameters to silicon logic gates.
+* **[Chapter 2: The Fast Path Ingress](docs/Chapter_2_packet_parser.md)**
+  * Teaches 512-bit line-rate packet parsing limits, combinatorial extraction matrices, and hardware pipelining.
+* **[Chapter 3: The Core Datapath Routing](docs/Chapter_3_flow_classifier.md)**
+  * Teaches TCAM emulation, subnet wildcard matching, and the spatial unrolling of Priority Encoders into massive FPGA logic trees.
+* **[Chapter 4: Traffic Queuing & Buffering](docs/Chapter_4_axi_stream_fifo.md)**
+  * Teaches Synchronous circular buffers, the N+1 pointer math to distinguish full/empty states, and AXI-Stream FWFT handshaking.
+* **[Chapter 5: Multi-Tenant Traffic Storage](docs/Chapter_5_queue_manager.md)**
+  * Teaches 5G QoS Multi-Tenant queuing, the catastrophic effects of Head-of-Line blocking, and BRAM partitioning strategies.
+* **[Chapter 6: The Hardware QoS Egress](docs/Chapter_6_priority_scheduler.md)**
+  * Teaches Strict Priority QoS algorithms, the Starvation problem, and nested combinatorial unrolling.
+
+## 🛠️ Simulating the Hardware
+
+This repository includes a full suite of Icarus Verilog testbenches to mathematically prove the assertions made in the textbook.
+
+**Prerequisites:**
+You must have [Icarus Verilog](https://bleyer.org/icarus/) installed and added to your system `PATH`.
+
+**Execution:**
+A PowerShell script is provided to automatically compile and run the simulations.
 ```powershell
-.\install_eda_tools.ps1
-```
-
-## Running Simulations
-
-We use a custom PowerShell build script (`build.ps1`) to compile and run the testbenches.
-
-```powershell
-# 1. Generate random 5G test packets
-.\build.ps1 genpackets
-
-# 2. Run all module testbenches
+# Run the complete test suite
 .\build.ps1 all
 
-# Or run modules individually:
+# Run specific modules
 .\build.ps1 parser
 .\build.ps1 classifier
 .\build.ps1 queue
-.\build.ps1 scheduler  # This is the master QoS latency test
+.\build.ps1 scheduler
 ```
 
-## Directory Structure
-```
-├── docs/                 # Detailed architectural documentation
-├── rtl/                  # Synthesizable Verilog hardware source code
-│   ├── common/           # Shared AXI-Stream FIFOs and Headers
-│   ├── parser/           # Header extraction
-│   ├── classifier/       # TCAM routing rules
-│   ├── queue/            # Multi-queue BRAM buffers
-│   └── scheduler/        # QoS transmission scheduling
-├── tb/                   # Verilog Testbenches for each module
-├── scripts/              # Python packet generator
-├── sim/                  # Generated simulation waveforms (.vcd) and logs
-├── build.ps1             # Windows simulation runner
-└── Makefile              # Linux simulation runner
-```
+The resulting `*.vcd` waveform files will be deposited in the `sim/` directory and can be analyzed using GTKWave.
