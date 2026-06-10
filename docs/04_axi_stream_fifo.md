@@ -43,12 +43,12 @@ block-beta
 stateDiagram-v2
     [*] --> EMPTY
     
-    EMPTY --> PARTIAL: Write occurs\n(wr_ptr != rd_ptr)
+    EMPTY --> PARTIAL: Write (wr_ptr != rd_ptr)
     
-    PARTIAL --> EMPTY: Read occurs\n(wr_ptr == rd_ptr)
-    PARTIAL --> FULL: Write occurs\n(wr_ptr[N] != rd_ptr[N] &&\n wr_ptr[N-1:0] == rd_ptr[N-1:0])
+    PARTIAL --> EMPTY: Read (wr_ptr == rd_ptr)
+    PARTIAL --> FULL: Write (MSB differs, LSBs match)
     
-    FULL --> PARTIAL: Read occurs\n(wr_ptr != rd_ptr)
+    FULL --> PARTIAL: Read (wr_ptr != rd_ptr)
 ```
 
 ---
