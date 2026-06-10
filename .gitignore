@@ -1,0 +1,15 @@
+# Build artifacts
+*.vvp
+*.vcd
+*.hex
+*.json
+
+# Windows/OS artifacts
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Temporary files
+*.swp
+*~
+*.log
