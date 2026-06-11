@@ -1,0 +1,8 @@
+Simulation started
+Enabling Token Bucket on Queue 3
+Total Rx Packets: 0
+Q0 | Enq: 0 | Drop: 0 | Deq: 0
+Q1 | Enq: 0 | Drop: 0 | Deq: 0
+Q2 | Enq: 0 | Drop: 0 | Deq: 0
+Q3 | Enq: 0 | Drop: 0 | Deq: 0
+tb_eval_top.sv:389: $finish called at 773788000 (1ps)

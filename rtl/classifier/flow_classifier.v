@@ -164,6 +164,7 @@ module flow_classifier (
 
     reg                              in_packet;
     reg [`TUSER_SLICE_ID_WIDTH-1:0]  current_slice_id;
+    reg                              current_rss_eligible;
 
     //------------------------------------------------------------------------
     // AXI-Stream Forwarding with Slice ID Insertion
@@ -183,6 +184,7 @@ module flow_classifier (
             m_axis_tlast    <= 1'b0;
             in_packet       <= 1'b0;
             current_slice_id <= `DEFAULT_SLICE_ID;
+            current_rss_eligible <= 1'b0;
         end else begin
             // Clear valid when output is consumed
             if (output_handshake) begin
@@ -199,14 +201,19 @@ module flow_classifier (
                     // First beat of packet — do the lookup
                     if (pkt_valid && match_found) begin
                         current_slice_id <= matched_slice_id;
+                        current_rss_eligible <= (matched_slice_id != `DEFAULT_SLICE_ID);
                     end else begin
                         current_slice_id <= `DEFAULT_SLICE_ID;
+                        current_rss_eligible <= 1'b0;
                     end
 
                     // Insert the matched Slice ID into TUSER
                     m_axis_tuser <= s_axis_tuser;
                     m_axis_tuser[`TUSER_SLICE_ID_HI:`TUSER_SLICE_ID_LO] <=
                         (pkt_valid && match_found) ? matched_slice_id : `DEFAULT_SLICE_ID;
+                    
+                    m_axis_tuser[`TUSER_RSS_ELIGIBLE_BIT] <=
+                        (pkt_valid && match_found && (matched_slice_id != `DEFAULT_SLICE_ID)) ? 1'b1 : 1'b0;
 
                     if (!s_axis_tlast) begin
                         in_packet <= 1'b1;
@@ -215,6 +222,7 @@ module flow_classifier (
                     // Subsequent beats — reuse the stored Slice ID
                     m_axis_tuser <= s_axis_tuser;
                     m_axis_tuser[`TUSER_SLICE_ID_HI:`TUSER_SLICE_ID_LO] <= current_slice_id;
+                    m_axis_tuser[`TUSER_RSS_ELIGIBLE_BIT] <= current_rss_eligible;
 
                     if (s_axis_tlast) begin
                         in_packet <= 1'b0;

@@ -80,7 +80,23 @@ module axilite_csr (
     output reg                             sch_cfg_queue_enable,
     output reg [31:0]                      sch_cfg_tb_rate,
     output reg [31:0]                      sch_cfg_tb_burst,
-    output reg                             sch_cfg_tb_enable
+    output reg                             sch_cfg_tb_enable,
+
+    // To QoS Scheduler (WRR Configuration)
+    output reg                             qos_cfg_wr_en,
+    output reg                             qos_cfg_mode,
+    output reg [`QUEUE_ID_WIDTH-1:0]       qos_cfg_weight_id,
+    output reg [15:0]                      qos_cfg_weight_val,
+
+    // To RSS Steer Engine
+    output reg                             reta_cfg_wr_en,
+    output reg [6:0]                       reta_cfg_idx,
+    output reg [`TUSER_SLICE_ID_WIDTH-1:0] reta_cfg_val,
+
+    // To Statistics Engine
+    output reg                             stat_rd_en,
+    output reg [7:0]                       stat_rd_addr,
+    input  wire [31:0]                     stat_rd_data
 );
 
     //------------------------------------------------------------------------
@@ -155,10 +171,21 @@ module axilite_csr (
             sch_cfg_tb_rate <= 0;
             sch_cfg_tb_burst <= 0;
             sch_cfg_tb_enable <= 0;
+
+            reta_cfg_wr_en <= 1'b0;
+            reta_cfg_idx <= 0;
+            reta_cfg_val <= 0;
+
+            qos_cfg_wr_en <= 1'b0;
+            qos_cfg_mode <= 1'b0;
+            qos_cfg_weight_id <= 0;
+            qos_cfg_weight_val <= 0;
         end else begin
             // Default to no write pulse
             fc_cfg_wr_en  <= 1'b0;
             sch_cfg_wr_en <= 1'b0;
+            reta_cfg_wr_en <= 1'b0;
+            qos_cfg_wr_en <= 1'b0;
 
             if (slv_reg_wren) begin
                 case (write_offset)
@@ -191,6 +218,24 @@ module axilite_csr (
                     12'h10C: sch_cfg_tb_burst     <= s_axi_wdata;
                     12'h110: sch_cfg_tb_enable    <= s_axi_wdata[0];
                     
+                    // ── RSS RETA Offsets (0x200 - 0x2FF) ──
+                    12'h200: reta_cfg_wr_en       <= 1'b1; // Trigger Commit!
+                    12'h204: begin
+                        reta_cfg_idx <= s_axi_wdata[6:0];
+                        reta_cfg_val <= s_axi_wdata[15:12]; // Slice ID shifted to match
+                    end
+
+                    // ── QoS Scheduler WRR Offsets (0x400 - 0x4FF) ──
+                    12'h400: begin
+                        qos_cfg_wr_en <= 1'b1;
+                        qos_cfg_mode  <= s_axi_wdata[0]; // 0=SP, 1=WRR
+                    end
+                    12'h404: begin
+                        qos_cfg_wr_en <= 1'b1;
+                        qos_cfg_weight_id <= s_axi_wdata[`QUEUE_ID_WIDTH-1:0];
+                        qos_cfg_weight_val <= s_axi_wdata[31:16]; // Weight value
+                    end
+
                     default: ; // Do nothing for invalid addresses
                 endcase
             end
@@ -200,24 +245,52 @@ module axilite_csr (
     //------------------------------------------------------------------------
     // AXI-Lite Read Logic (Simplified for MVP)
     //------------------------------------------------------------------------
+    reg [31:0] raddr_reg;
+    reg        stat_rd_pending;
+
     always @(posedge clk) begin
         if (!rst_n) begin
             s_axi_arready <= 1'b0;
             s_axi_rvalid  <= 1'b0;
             s_axi_rresp   <= 2'b00;
             s_axi_rdata   <= 32'd0;
+            
+            stat_rd_en    <= 1'b0;
+            stat_rd_addr  <= 8'd0;
+            stat_rd_pending <= 1'b0;
+            raddr_reg     <= 32'd0;
         end else begin
+            stat_rd_en <= 1'b0; // Default: no read pulse
+
             // Accept address
             if (~s_axi_arready && s_axi_arvalid) begin
                 s_axi_arready <= 1'b1;
+                raddr_reg     <= s_axi_araddr;
+                
+                // If it's in the Stats offset range (0x300 - 0x3FF)
+                if (s_axi_araddr[11:8] == 4'h3) begin
+                    stat_rd_en   <= 1'b1;
+                    stat_rd_addr <= s_axi_araddr[9:2]; // Word address
+                    stat_rd_pending <= 1'b1;
+                end
             end else begin
                 s_axi_arready <= 1'b0;
             end
 
-            // Return dummy data (0xCAFEBABE) to prove memory map is alive
-            if (s_axi_arready && s_axi_arvalid && ~s_axi_rvalid) begin
+            // Generate read response
+            // For stats reads: stat_rd_addr was set on the same cycle as
+            // stat_rd_en. The combinational mux in stats_engine produces
+            // valid data immediately. We capture it on the NEXT cycle
+            // using stat_rd_pending.
+            if (stat_rd_pending && ~s_axi_rvalid) begin
                 s_axi_rvalid <= 1'b1;
                 s_axi_rresp  <= 2'b00; // OKAY
+                s_axi_rdata  <= stat_rd_data;
+                stat_rd_pending <= 1'b0;
+            end else if (s_axi_arready && s_axi_arvalid && ~s_axi_rvalid && s_axi_araddr[11:8] != 4'h3) begin
+                // Return dummy data for non-stats addresses
+                s_axi_rvalid <= 1'b1;
+                s_axi_rresp  <= 2'b00;
                 s_axi_rdata  <= 32'hCAFEBABE;
             end else if (s_axi_rvalid && s_axi_rready) begin
                 s_axi_rvalid <= 1'b0;

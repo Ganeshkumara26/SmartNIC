@@ -24,7 +24,7 @@
 
 `define AXIS_DATA_WIDTH     512
 `define AXIS_KEEP_WIDTH     (`AXIS_DATA_WIDTH / 8)   // 64
-`define AXIS_USER_WIDTH     128
+`define AXIS_USER_WIDTH     256
 
 //----------------------------------------------------------------------------
 // Ethernet Header Field Offsets (byte offsets within the first 512-bit beat)
@@ -139,8 +139,13 @@
 `define TUSER_SRC_IP_HI         111
 `define TUSER_SRC_IP_LO         80
 
-`define TUSER_RESERVED_HI       127
-`define TUSER_RESERVED_LO       112
+`define TUSER_RSS_HASH_HI       159
+`define TUSER_RSS_HASH_LO       128
+
+`define TUSER_RSS_ELIGIBLE_BIT  160
+
+`define TUSER_RESERVED_HI       255
+`define TUSER_RESERVED_LO       161
 
 //----------------------------------------------------------------------------
 // Queue & Scheduler Parameters

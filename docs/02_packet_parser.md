@@ -26,9 +26,9 @@ This allows the parser to extract the routing tuple in exactly zero clock cycles
 block-beta
   columns 3
   
-  s_axis["s_axis (From CMAC)\n512-bit Data\n64-bit Keep"]
-  parser["packet_parser.v\nState Machine\nCombinatorial Slicer"]
-  m_axis["m_axis (To Classifier)\n512-bit Data\n128-bit TUSER Metadata"]
+  s_axis["s_axis (From CMAC)\nIngress Interface\n512-bit Payload Data\n64-bit Byte Valid Mask"]
+  parser["packet_parser.v\nCore Hardware Logic\nZero-Cycle Combinatorial Slicer\n1-Cycle Latch Pipeline"]
+  m_axis["m_axis (To Classifier)\nEgress Interface\n512-bit Payload Data\n128-bit TUSER Routing Metadata"]
   
   s_axis --> parser
   parser --> m_axis
@@ -42,11 +42,17 @@ The parser implements a Mealy/Moore hybrid Finite State Machine (FSM) to track p
 stateDiagram-v2
     [*] --> ST_IDLE
     
+    note left of ST_IDLE: Waiting for new packet arrival
+    
     ST_IDLE --> ST_FIRST_BEAT: s_axis_tvalid == 1
+    
+    note right of ST_FIRST_BEAT: Extracts headers (IP/UDP).\nIf packet is <= 64 bytes,\nreturn immediately to IDLE.
     
     ST_FIRST_BEAT --> ST_IDLE: m_axis_tvalid == 1 &&\n m_axis_tready == 1 &&\n first_beat_last == 1
     
     ST_FIRST_BEAT --> ST_FORWARDING: m_axis_tvalid == 1 &&\n m_axis_tready == 1 &&\n first_beat_last == 0
+    
+    note right of ST_FORWARDING: Packet > 64 bytes.\nContinuously forward payload beats\nuntil tlast is detected.
     
     ST_FORWARDING --> ST_IDLE: s_axis_tvalid == 1 &&\n s_axis_tready == 1 &&\n s_axis_tlast == 1
     ST_FORWARDING --> ST_FORWARDING: s_axis_tvalid == 1 &&\n s_axis_tready == 1 &&\n s_axis_tlast == 0
@@ -155,15 +161,6 @@ Estimated logic levels: 2-3 LUTs. This easily meets the 250 MHz (4.0 ns) require
 - `m_axis_tlast` is driven high.
 - Handshake completes. FSM transitions back to `ST_IDLE`.
 
-**Clock Cycle 26 (Packet 2 Start):**
-- CMAC asserts `s_axis_tvalid` = 1 for the 64-byte TCP packet.
-- Combinatorial logic identifies `is_ipv4 = 1` but `is_udp = 0`. The metadata is populated, but UDP ports are masked to 0.
-- Rising Edge: Data latched. FSM transitions to `ST_FIRST_BEAT`.
-
-**Clock Cycle 27 (Packet 2 End):**
-- FSM is in `ST_FIRST_BEAT`. `first_beat_last` = 1.
-- Egress handshake completes. FSM transitions directly to `ST_IDLE`.
-
 ---
 
 ## 7. Test Cases & Coverage
@@ -181,18 +178,178 @@ The parser must be verified against severe edge cases to ensure network resilien
    - **Condition**: A 64-byte packet (`tvalid` and `tlast` asserted on the exact same cycle) arrives.
    - **Check**: The FSM must transition `ST_IDLE` -> `ST_FIRST_BEAT` -> `ST_IDLE` without ever entering `ST_FORWARDING`.
 
-### 7.2 Verification Environment
-The testbench utilizes constrained random generation. Packets of randomized lengths (64 bytes to 9000 bytes Jumbo Frames) are injected. `tkeep` masks are randomized on the final beat to ensure the parser does not corrupt sub-word payloads.
+---
+
+## 8. Deep Dive: IP Fragmentation Handling
+
+A critical vulnerability in all hardware-based stateless packet parsers is handling IP Fragmentation. In 5G networks, if an encapsulation layer (like IPsec or GTP-U) causes a packet to exceed the Maximum Transmission Unit (MTU), the transmitting router will slice the packet into fragments.
+
+### The Parsing Challenge
+
+```mermaid
+block-beta
+  columns 3
+  
+  Title1["Fragment 1 (Correct)\nContains complete headers\nCan be parsed flawlessly"] space Title2["Fragment 2 (Vulnerable)\nMissing Layer 4 headers\nCauses port extraction corruption"]
+  
+  Eth1["Ethernet Header (14 Bytes)"] space Eth2["Ethernet Header (14 Bytes)"]
+  IP1["IPv4 Header (20 Bytes)"] space IP2["IPv4 Header (20 Bytes)"]
+  UDP1["UDP Header (8 Bytes)\nContains Source/Dest Ports"] space Payload2["User Payload Data\n(Overlaps into Port extraction zone)"]
+  Payload1["User Payload Data"] space Missing["(No UDP Header Present)"]
+  
+  style UDP1 fill:#bbf,stroke:#f66,stroke-width:2px,color:#000,stroke-dasharray: 5 5
+  style Payload2 fill:#f99,stroke:#333,stroke-width:2px,color:#000
+```
+
+When an IPv4 packet is fragmented:
+1. **Fragment 1:** Contains the Ethernet Header, IPv4 Header, UDP Header, and the first chunk of payload.
+2. **Fragment 2:** Contains the Ethernet Header, IPv4 Header, and the *second chunk of payload*. **Crucially, it does NOT contain the UDP header.**
+
+Because our `packet_parser.v` is completely stateless, it evaluates every packet independently. When Fragment 2 arrives, the combinatorial slice attempting to extract the UDP destination port will actually be slicing into the middle of the user's data payload. This will yield a garbage port number, causing the downstream `flow_classifier.v` to misroute the packet.
+
+### The `MF` and `Fragment Offset` Solution
+To protect the classifier, the parser must actively inspect the IPv4 Flags and Fragment Offset fields (located at byte offset 20 in the Ethernet frame).
+- **MF (More Fragments) Flag:** Bit 13 of the IPv4 Flags field.
+- **Fragment Offset:** Bits 0-12.
+
+**Hardware Implementation Requirements:**
+The combinatorial logic must be updated to check:
+```verilog
+wire is_fragmented = (s_axis_tdata[`IPV4_FLAGS_MF] == 1'b1) || (s_axis_tdata[`IPV4_FRAG_OFFSET_HI:`IPV4_FRAG_OFFSET_LO] != 13'd0);
+```
+If `is_fragmented` is true, the hardware *must* zero out the UDP extraction fields in `parsed_metadata`. The downstream `flow_classifier.v` must be designed to route fragmented packets based solely on the Destination IP address, ignoring the ports, to ensure all fragments of the same original packet are forwarded to the exact same CPU queue for reassembly.
 
 ---
 
-## 8. Implementation Notes & Design Trade-offs
+## 9. Advanced Parsing: P4-to-Verilog Translation Theory
 
-### Why No P4 / Programmable Parse Graph?
-Advanced SmartNICs often use P4 Match-Action tables to parse arbitrary protocols. While flexible, compiling P4 parse graphs into FPGA LUTs creates devastating timing closure issues at 250 MHz due to the deep logic required to recursively shift pointers. 
-For a 5G User Plane Function (UPF) or base station, the core protocols are rigidly defined (Ethernet, IPv4/IPv6, UDP/GTP-U). By hardcoding the byte offsets and utilizing a monolithic 512-bit wide combinatorial slice, the logic footprint is reduced by over 90% compared to a P4 parser, and timing closure is mathematically guaranteed.
+While this parser is hardcoded for IPv4/UDP, the telecommunications industry is rapidly adopting **P4 (Programming Protocol-independent Packet Processors)**. P4 is a domain-specific language that allows network engineers to define parse graphs. A P4 compiler translates these graphs into actual Verilog RTL.
 
-### The 64-Byte Guarantee
-The parser relies on the assertion that the entire Ethernet+IP+UDP header fits within the first 64 bytes (the first 512-bit beat).
-If an IPv4 packet contained maximum IP Options (60 bytes total IP header), the UDP header would be pushed to byte 74 (14 + 60), which falls into the *second* 512-bit beat. In this rare edge-case, the current parser logic would incorrectly slice the UDP ports from the IP options field.
-**Production Modification**: A production variant would require implementing a Stage 2 pipeline register to hold Beat 1 while analyzing Beat 2, tracking the `IHL` field to dynamically shift the UDP extraction mask. For the baseline MVP, IP Options are assumed to be 0 (standard 20-byte IP header).
+### How P4 Compilers Generate Parser RTL
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    
+    state Stage1 {
+        Extract_Ethernet --> Check_EtherType
+        note right of Check_EtherType: Evaluates EtherType = 0x0800
+    }
+    
+    state Stage2 {
+        Align_to_Bit0 --> Extract_IPv4
+        Extract_IPv4 --> Check_Protocol
+        note right of Align_to_Bit0: Massive Barrel Shifter logic\nconsumes excessive LUTs to align data
+    }
+    
+    state Stage3 {
+        Shift_Payload_by_IHL --> Extract_UDP
+        note right of Extract_UDP: Finally extracts Destination Port
+    }
+    
+    Stage1 --> Stage2: 0x0800 (IPv4)
+    Stage2 --> Stage3: 0x11 (UDP)
+```
+
+If you were to write this parser in P4, it would look like a state machine:
+```p4
+state start {
+    packet.extract(ethernet);
+    transition select(ethernet.etherType) {
+        0x0800: parse_ipv4;
+        default: accept;
+    }
+}
+```
+
+A compiler (like Xilinx SDNet or Vitis Networking P4) converts this into a **TCAM-based Shift Register**. 
+Instead of a single monolithic 512-bit slice, the P4-generated Verilog operates as a pipeline:
+1. **Stage 1 (Ethernet):** Extracts 14 bytes. Reads the `EtherType`. The remaining 512-14 = 498 bits are physically shifted to align the IP header to bit 0.
+2. **Stage 2 (IPv4):** Reads the IP header. The IP header length (IHL) is dynamic (20 to 60 bytes). The hardware uses a massive barrel shifter to shift the remaining payload by `IHL * 4` bytes to align the UDP header to bit 0.
+3. **Stage 3 (UDP):** Extracts the UDP header.
+
+**The Tradeoff:**
+The P4-generated shift-register parser is infinitely flexible (it can parse infinite layers of MPLS or VLAN tags). However, the massive barrel shifters required to dynamically shift 512-bit buses consume thousands of LUTs and frequently fail timing closure at 250 MHz. Our static combinatorial approach uses < 1% of the logic of a P4 parser, sacrificing flexibility for absolute deterministic timing and silicon efficiency.
+
+---
+
+## 10. Industry Verification: SystemVerilog UVM Driver Architecture
+
+In a production ASIC or high-end FPGA environment, basic Verilog testbenches (using `$display` and `#10` delays) are completely insufficient. To guarantee 0 dropped packets at 100 Gbps, verification engineers use the **Universal Verification Methodology (UVM)** written in SystemVerilog.
+
+### Building the UVM Environment for the Parser
+
+```mermaid
+block-beta
+  columns 4
+  
+  Seq["UVM Sequence\n(Generates dynamic, random OOP Packets\nusing SystemVerilog constrained randoms)"]
+  Drv["UVM Driver / BFM\n(Translates software objects into\nphysical AXI-Stream wire toggles)"]
+  DUT["packet_parser.v\n(Device Under Test\nThe actual Verilog module being stressed)"]
+  Score["UVM Scoreboard\n(Evaluates coverage and asserts FATAL\nif parsed metadata mismatches C++ Model)"]
+  
+  MonIn["Ingress Monitor\n(Sniffs 512-bit s_axis_tdata)"]
+  MonOut["Egress Monitor\n(Sniffs 128-bit m_axis_tuser)"]
+  
+  Seq --> Drv
+  Drv --> DUT
+  
+  Drv --> MonIn
+  MonIn --> Score
+  
+  DUT --> MonOut
+  MonOut --> Score
+```
+
+1. **UVM Sequence Item (The Packet):**
+   Instead of manipulating 512-bit vectors, the testbench defines a high-level software class representing a network packet.
+   ```systemverilog
+   class ethernet_packet extends uvm_sequence_item;
+       rand bit [47:0] dest_mac;
+       rand bit [47:0] src_mac;
+       rand bit [15:0] eth_type;
+       rand bit [7:0]  payload[]; // Dynamic array for IP/UDP data
+       
+       constraint valid_eth_type { eth_type inside {16'h0800, 16'h86DD}; }
+   endclass
+   ```
+
+2. **The UVM Driver (The BFM - Bus Functional Model):**
+   The Driver receives the abstract `ethernet_packet` class and translates it into cycle-accurate AXI4-Stream toggles on the `s_axis_tdata` pins. It mathematically chunks the `payload[]` array into 64-byte blocks, drives `tvalid` high, computes the exact `tkeep` mask for the final beat, and drives `tlast`.
+
+3. **The UVM Monitor & Scoreboard:**
+   A Monitor observes the `m_axis_tuser` pins. It reconstructs the extracted metadata. The Scoreboard compares the Monitor's output against a "Golden Reference Model" (usually a C++ or Python script). If the C++ model parsed `192.168.1.1` from the payload array, but the Verilog parser output `192.168.1.2` on the `TUSER` pins, the Scoreboard immediately throws a `UVM_FATAL` error, halting the simulation.
+
+### Coverage Driven Verification (CDV)
+To prove the parser is production-ready, verification engineers use SystemVerilog Covergroups to prove they have stimulated every possible edge case.
+```systemverilog
+covergroup parser_cg @(posedge clk);
+    cp_packet_size: coverpoint payload.size() {
+        bins micro = {64};
+        bins standard = {[65:1500]};
+        bins jumbo = {[1501:9000]};
+    }
+    cp_backpressure: coverpoint m_axis_tready {
+        bins stall = {0};
+        bins flow  = {1};
+    }
+    cross cp_packet_size, cp_backpressure;
+endgroup
+```
+This guarantees the parser has been mathematically proven to handle Jumbo frames while simultaneously experiencing downstream backpressure.
+
+---
+
+## 11. Production Hardening: ECC and Parity Protection
+
+In telecom and aerospace applications, FPGAs are subjected to high altitudes and cosmic radiation. High-energy neutrons can strike the silicon die, flipping the electrical charge of a Flip-Flop from a `0` to a `1`. This is known as a **Single Event Upset (SEU)**.
+
+### The Danger to the Parser
+Our parser relies heavily on the 705-bit pipeline register array (`first_beat_data`, `parsed_metadata`). If an SEU flips a bit in the `parsed_metadata` register, a packet destined for Queue 0 (URLLC) could instantly be misclassified as Queue 3 (Best-Effort). Even worse, if the `first_beat_last` register flips, the state machine will permanently hang, destroying the entire 100 Gbps link until the server is rebooted.
+
+### The ECC Parity Solution
+To harden the design, production variants of this parser must implement Error Correcting Codes (ECC) on the state machine and metadata registers.
+1. **Triple Modular Redundancy (TMR) for the FSM:**
+   The `state` register is physically instantiated three times in parallel. A voter circuit compares the three states. If one state is `ST_IDLE` but the other two are `ST_FORWARDING`, the voter assumes a radiation strike occurred, mathematically overrides the flipped bit, and outputs `ST_FORWARDING`.
+2. **Parity Bits for Metadata:**
+   The 128-bit `parsed_metadata` register is expanded to include parity bits. Before the Flow Classifier accepts the `TUSER` bus, it computes the XOR parity of the metadata. If it detects a mismatch, the classifier can intelligently drop the corrupted packet rather than routing it to the wrong queue.
