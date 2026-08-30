@@ -101,7 +101,8 @@ module queue_manager (
             assign queue_empty[g] = (head[g] == tail[g]);
             assign queue_full[g]  = (head[g][ADDR_BITS] != tail[g][ADDR_BITS]) &&
                                     (head[g][ADDR_BITS-1:0] == tail[g][ADDR_BITS-1:0]);
-            assign queue_fill_levels[g*8 +: 8] = fill[7:0];
+            wire [7:0] fill_8b = fill;
+            assign queue_fill_levels[g*8 +: 8] = fill_8b;
         end
     endgenerate
 
