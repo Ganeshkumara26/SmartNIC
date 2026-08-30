@@ -1,17 +1,26 @@
-# Ignore Vivado generated files and directories
-charts/
-checkpoints/
-project/
+# FPGA / Vivado Standard Gitignore
 
-vivado_run/
-ha_tff_vivado/
-synth/
+# Cache and compiled artifacts
 *.dcp
 *.jou
 *.log
 *.pb
 *.wdf
-*.dir/
-.Xil/
 *.str
 *.out
+*.dir/
+.Xil/
+
+# Project and run directories (these should be generated via TCL scripts)
+project/
+vivado_run/
+ha_tff_vivado/
+synth/
+checkpoints/
+
+# IDE files
+.vscode/
+
+# Keep reports for public viewing!
+!reports/
+!charts/
