@@ -1,15 +1,17 @@
-# Build artifacts
-*.vvp
-*.vcd
-*.hex
-*.json
-
-# Windows/OS artifacts
-Thumbs.db
-Desktop.ini
-.DS_Store
-
-# Temporary files
-*.swp
-*~
+﻿# Ignore Vivado generated files and directories
+charts/
+checkpoints/
+project/
+reports/
+vivado_run/
+ha_tff_vivado/
+synth/
+*.dcp
+*.jou
 *.log
+*.pb
+*.wdf
+*.dir/
+.Xil/
+*.str
+*.out
