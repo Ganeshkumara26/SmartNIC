@@ -1,8 +1,8 @@
-﻿# Ignore Vivado generated files and directories
+# Ignore Vivado generated files and directories
 charts/
 checkpoints/
 project/
-reports/
+
 vivado_run/
 ha_tff_vivado/
 synth/
